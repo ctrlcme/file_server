@@ -39,6 +39,19 @@ main(){
     struct pollfd pfds[MAX_CLIENTS + 1];
     pds[0].fd = fd;
     pfds[0].events = POLLIN | POLLPRI;
+    int useClient = 0; // a better var name? what does this do
+
+    // main loop to handle the pfds from the connecting clients
+    // should move all the accept logic below and what not into this main loop
+    while (1)
+    {
+        int pollResult = poll(pfds, useClient + 1, 5000);
+        if (pollResult > 0) {
+            if (pfds[0].revents & POLLIN) {
+            
+            }
+        }
+    }
 
     char *intro_msg = "\nYou have connected to Tokka's fileserver...\n";
     char *exit_msg = "\nYou are disconnecting from Tokka's fileserver...\n";
