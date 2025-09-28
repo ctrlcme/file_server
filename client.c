@@ -1,4 +1,4 @@
-#include "file_server.h"
+#include "build.h"
 
 int
 file_exists(char *file) {
@@ -23,15 +23,15 @@ main(int argc, char *argv[]){
         exit(EXIT_FAILURE);
     }
 
-    int i, fd;
+    int i, fd, file_fd, b;
     char buffer[BUFLEN];
+    char sendbuffer[BUFLEN];
 
     struct addrinfo hints, *ai0, *ai;
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = PF_UNSPEC; // IPv4
     hints.ai_socktype = SOCK_STREAM; // TCP
-    
 
     /* When turning this into a service, how can I provide values
        from a .conf file? */
@@ -58,8 +58,27 @@ main(int argc, char *argv[]){
     } else {
         /* I NEED TO FIGURE OUT HOW TO SEND AN ACTUAL FILE / WHOLE 
             * FILE, AM A LITTLE UNSURE. */
+        read(fd, buffer, BUFLEN);
+        printf("%s\n", buffer);
+       
+        // send the file name
+        send(fd, argv[2], sizeof(argv[2]), 0);
+
+        file_fd = open(argv[2], O_RDONLY);
+
+        if (file_fd < 0) {
+            fprintf(stderr, "Opening file path %s failed.\n", argv[2]);
+            exit(EXIT_FAILURE);
+        }
+        
+        while (b = read(file_fd, sendbuffer, BUFLEN) > 0) {
+            // need to have actual bytes read sent, not BUFLEN
+            send(fd, sendbuffer, sizeof(sendbuffer), 0);
+        }
+        
+        printf("The file: %s sent successfully\n", argv[2]);
+        close(file_fd);
+        close(fd);
         return 0;
-        printf("WOOO YOU GAVE ME A FILE\n");
-        // send();
     }
 }

@@ -11,8 +11,15 @@
 #include <unistd.h>
 #include <poll.h>
 #include <errno.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
 
 #define PORT "5000"
-#define BUFLEN 1500
+#define BUFLEN 100
+#define MAX_SIZE 1024
+
+void *get_in_addr(struct sockaddr *sa);
+int create_sock();
+void create_pserv();
 
 #endif
