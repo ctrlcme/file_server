@@ -12,16 +12,50 @@ file_exists(char *file) {
     }    
 }
 
+void
+menu_selection(int fd) {
+    uint32_t exists, tmp_exists, answer, tmp_answer;
+    
+    read(fd, &tmp_exists, sizeof(tmp_exists));
+    exists = ntohl(tmp_exists);
+
+    if (exists) {
+        printf("The file exists on the file server, please select an option from below:\n");
+        printf("\t 0) Don't overwrite the file\n");
+        printf("\t 1) Overwrite the file\n");
+        printf("Selection: ");
+
+        scanf("%u", &answer);
+        
+
+        switch((int)answer) {
+            case 0:
+                printf("No action to do, stopping...\n");
+                exit(1);
+                break;
+            case 1:
+                printf("Overwriting the file..\n");
+                break;
+            default:
+                printf("Please select a valid option (1 or 0)\n");
+                exit(1);
+        }
+
+        tmp_answer = htonl(answer);
+        send(fd, &tmp_answer, sizeof(tmp_answer), 0);
+
+    } else 
+        printf("Copying the file now...\n");
+}
+
 int
 send_file(char *file, int fd, const size_t chunk) {
     const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
     char *data, *ptr, *end;
-    char rbuff[1024];
-    ssize_t bytes;
     int file_fd, err;
+    ssize_t bytes;
 
     // send the file name
-    //send(fd, file, sizeof(file), 0);
 
     file_fd = open(file, O_RDONLY);
 
@@ -85,9 +119,11 @@ send_file(char *file, int fd, const size_t chunk) {
         err = EIO;
     if (err) 
         return(err);
-
+    
+    // add logic to check that the bytes sent == bytes received
     // perhaps some logic to validate the file sent OK?
     printf("The file: %s sent successfully.\n", file);
+    return 0;
 }
 
 int
@@ -102,8 +138,6 @@ main(int argc, char *argv[]){
     }
 
     int i, fd;
-    char buffer[BUFLEN];
-    char sendbuffer[BUFLEN];
 
     struct addrinfo hints, *ai0, *ai;
 
@@ -134,12 +168,15 @@ main(int argc, char *argv[]){
         perror("Connecting to address failed.");
         exit(EXIT_FAILURE);
     } else {
-        /* I NEED TO FIGURE OUT HOW TO SEND AN ACTUAL FILE / WHOLE 
-            * FILE, AM A LITTLE UNSURE. */
-        read(fd, buffer, BUFLEN);
-        printf("%s\n", buffer);
-      
+        // intro msg
+        printf("\nYou have connected to the fileserver...\n\n");
+
+        // implementation of menu options and passing values to the server
+        //printf("You chose option: %s\n", menu_selection(fd));
+        menu_selection(fd);
+
         send_file(argv[2], fd, 0);
+
         return 0;
     }
 }
