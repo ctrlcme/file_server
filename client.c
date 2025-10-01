@@ -13,6 +13,84 @@ file_exists(char *file) {
 }
 
 int
+send_file(char *file, int fd, const size_t chunk) {
+    const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
+    char *data, *ptr, *end;
+    char rbuff[1024];
+    ssize_t bytes;
+    int file_fd, err;
+
+    // send the file name
+    //send(fd, file, sizeof(file), 0);
+
+    file_fd = open(file, O_RDONLY);
+
+    if (file_fd == -1) {
+        exit(errno);
+    }
+    
+    data = malloc(size);
+    if(!data) {
+        close(fd);
+        close(file_fd);
+        return ENOMEM;
+    }
+
+    while(1) {
+        bytes = read(file_fd, data, size);
+
+        if (bytes < 0) {
+            if (bytes == -1)
+                err = errno;
+            else
+                err = EIO;
+            free(data);
+            close(fd);
+            close(file_fd);
+            exit(err);
+        }
+        else {
+            if (bytes == 0)
+                break;
+        }
+
+        ptr = data;
+        end = data + bytes;
+        while (ptr < end) {
+            // there might be problems with this
+            bytes = send(fd, ptr, (size_t)(end - ptr), 0);
+            
+            if (bytes <= 0) {
+                if (bytes == -1)
+                    err = errno;
+                else
+                    err = EIO;
+                free(data);
+                close(fd);
+                close(file_fd);
+                exit(err);
+            }
+            else {
+                ptr += bytes;
+            }
+        }
+    }
+
+    free(data);
+
+    err = 0;
+    if (close(fd))
+        err = EIO;
+    if (close(file_fd))
+        err = EIO;
+    if (err) 
+        return(err);
+
+    // perhaps some logic to validate the file sent OK?
+    printf("The file: %s sent successfully.\n", file);
+}
+
+int
 main(int argc, char *argv[]){ 
     
     if (argc != 3) {
@@ -23,7 +101,7 @@ main(int argc, char *argv[]){
         exit(EXIT_FAILURE);
     }
 
-    int i, fd, file_fd, b;
+    int i, fd;
     char buffer[BUFLEN];
     char sendbuffer[BUFLEN];
 
@@ -60,25 +138,8 @@ main(int argc, char *argv[]){
             * FILE, AM A LITTLE UNSURE. */
         read(fd, buffer, BUFLEN);
         printf("%s\n", buffer);
-       
-        // send the file name
-        send(fd, argv[2], sizeof(argv[2]), 0);
-
-        file_fd = open(argv[2], O_RDONLY);
-
-        if (file_fd < 0) {
-            fprintf(stderr, "Opening file path %s failed.\n", argv[2]);
-            exit(EXIT_FAILURE);
-        }
-        
-        while (b = read(file_fd, sendbuffer, BUFLEN) > 0) {
-            // need to have actual bytes read sent, not BUFLEN
-            send(fd, sendbuffer, sizeof(sendbuffer), 0);
-        }
-        
-        printf("The file: %s sent successfully\n", argv[2]);
-        close(file_fd);
-        close(fd);
+      
+        send_file(argv[2], fd, 0);
         return 0;
     }
 }

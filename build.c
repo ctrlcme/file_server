@@ -61,7 +61,92 @@ create_sock() {
 // function for receiving the file from a connected client
 // later task
 int
-recv_file(int fd, char* buff) {
+recv_file(int fd, const size_t chunk) {
+    const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
+    char filename[BUFLEN];
+    char *data, *ptr, *end;
+    ssize_t bytes, total; // learn more about ssize_t use cases
+    int file_fd, err;
+
+    // receive the file name
+    //read(fd, filename, BUFLEN);
+
+    // change to be dynamic file name
+    if ((file_fd = open("/home/tokka/copiedfile", O_WRONLY | O_CREAT | O_EXCL, 0666)) < 0) {
+        if (errno == EEXIST) {
+            fprintf(stderr, "The file already exists on the file server.\n");
+            exit(errno);
+        }
+        printf("Copying file failed.\n");
+        exit(errno);
+    }
+
+    data = malloc(size);
+    if (!data) {
+        close(fd);
+        close(file_fd);
+        // need to pass dynamic filename here
+        unlink("home/tokka/copiedfile");
+        return ENOMEM;
+    }
+   
+    // copy loop
+    while(1) {
+        bytes = read(fd, data, size);
+        if (bytes < 0) {
+            if (bytes == -1) 
+                err = errno;
+            else
+                err = EIO;
+            free(data);
+            close(fd);
+            close(file_fd);
+            // need to pass dynamic filename here
+            unlink("home/tokka/copiedfile");
+            return err;
+        }
+        else {
+            if (bytes == 0)
+                break;
+        }
+        
+        ptr = data;
+        end = data + bytes;
+        while (ptr < end) {
+            bytes = write(file_fd, ptr, (size_t)(end - ptr));
+            if (bytes < 0){
+                if (bytes == -1)
+                    err = errno;
+                else
+                    err = EIO;
+                free(data);
+                close(fd);
+                close(file_fd);
+                // need to pass dynamic filename here
+                unlink("home/tokka/copiedfile");
+                return err;
+            }
+            else {
+                ptr += bytes;
+                total += bytes;
+            }
+        }
+    }
+
+    free(data);
+
+    err = 0;
+    if (close(fd))
+        err = EIO;
+    if (close(file_fd))
+        err = EIO;
+    if (err) {
+        // need to pass dynamic filename here
+        unlink("home/tokka/copiedfile");
+        return err;
+    }
+
+    printf("Received %zd bytes\n", total);
     return 0;
 }
 
@@ -72,8 +157,6 @@ create_pserv() {
     char *exit_msg = "\nYou are disconnecting from Tokka's fileserver...\n";
 
     struct pollfd pfds[MAX_CONN];
-    // initially I was multiplying sizeof by MAX_CONN but 
-    // memset was not happy with it
     memset(pfds, 0, sizeof(pfds));
 
     // listen on fd, new connection on new_fd
@@ -128,36 +211,14 @@ create_pserv() {
         for (int i = 1; i < clients; i++) {
             if (pfds[i].revents & POLLIN | POLLOUT) {
                 char buff[MAX_SIZE + 1];
-                char filename[BUFLEN];
-                int file_fd, total, b;
                 // send to log
                 printf("Found a communicating socket at position: %d\n", i);
-                // THIS PART MIGHT NEED CHANGED FOR FILE TRANSFER
-                //x = recv_file(pfds[i].fd, buff);
-                send(pfds[i].fd, intro_msg, strlen(intro_msg), 0);
                 
-                // receive the file name
-                read(pfds[i].fd, filename, BUFLEN);
-                // change to be dynamic file name
-                if ((file_fd = open("/home/tokka/copiedfile", O_CREAT | O_WRONLY  )) < 0) {
-                    printf("Copying file failed.\n");
-                    exit(EXIT_FAILURE);
-                }
+                send(pfds[i].fd, intro_msg, strlen(intro_msg), 0);
 
-                total = 0;
-                // think I need to do something different with the while
-                // I was also passing MAX_SIZE instead of sizeof()
-                // before...
-                while (b = read(pfds[i].fd, buff, sizeof(buff)) > 0) {
-                    total += b;
-                    write(file_fd, buff, sizeof(buff));
-                }
-
-                printf("Received %d bytes\n", total);
-
-                close(pfds[i].fd);
+                recv_file(pfds[i].fd, 0);
             }
-            // I'd like to handle disconnects here...
+            // Disconnects handled here
             if (pfds[i].revents & POLLERR | POLLHUP){
                 printf("The client has closed the connection.\n");
                 pfds[i] = pfds[clients-1];
