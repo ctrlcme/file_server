@@ -18,7 +18,7 @@ void
 // send to log ifle from .conf - later task
 int
 create_sock() {
-    int status, fd, rv;
+    int fd, rv;
     struct addrinfo hints, *servinfo;
     int yes = 1;
 
@@ -59,61 +59,108 @@ create_sock() {
 }
 
 // function for receiving the file from a connected client
-// later task
 // make sure to only use returns
+// grab the fileserver directory from .conf - later task
 int
 recv_file(int fd, const size_t chunk) {
     const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
-    char *data, *ptr, *end;
+    char *data, *ptr, *end, *filename;
+    char path[35] = "/etc/fileserver/";
     ssize_t bytes, total; // learn more about ssize_t use cases
     int file_fd, err;
-    uint32_t exists, tmp_exists, answer, tmp_answer;
+    uint32_t exists, tmp_exists, answer, tmp_answer, length, tmp_length;
 
-    // receive the file name
-    //read(fd, filename, BUFLEN);
+    // receive the file name length first
+    read(fd, &tmp_length, sizeof(tmp_length));
+    length = ntohl(tmp_length);
+
+    // validate the length is reasonable
+    if (length == 0 || length > 200) {
+        fprintf(stderr, "Invalid filename length: %u\n", length);
+        return -1;
+    }
+    
+    filename = malloc(length);
+    if (filename == NULL) {
+        perror("malloc failed for filename");
+        return -1;
+    }
+    
+    if ((bytes = read(fd, filename, length)) != length) {
+        fprintf(stderr, "Read %zd bytes for filename, expected %u\n", bytes, length);
+        free(filename);
+        return -1;
+    }
+
+    filename[length] = '\0';
+
+    printf("Received filename: %s\n", filename);
+
+    // ADD LOGIC FOR CONCAT FILENAME TO FILE SERVER DIR
+    // get length from conf file
+    strcat(path, filename);
 
     // change to be dynamic file name
-    if ((file_fd = open("/home/tokka/copiedfile", O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)) < 0) {
+    if ((file_fd = open(path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)) < 0) {
         if (errno == EEXIST) {
-            if ((file_fd = open("/home/tokka/copiedfile", O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR)) < 0) {
+            if ((file_fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR)) < 0) {
                 fprintf(stderr, "Copying file failed.\n");
+                free(filename);
+                printf("The errno was: %d\n", errno);
                 return errno;
             }
 
             // handle asking the client about overwriting
-            exists = 1;
-            tmp_exists = htonl(exists);
-            send(fd, &tmp_exists, sizeof(tmp_exists), 0);
+            tmp_exists = 1;
+            exists = htonl(tmp_exists);
+            send(fd, &exists, sizeof(exists), 0);
             printf("The file already exists on the file server.\n");
 
-            read(fd, &tmp_answer, sizeof(tmp_answer));
+            bytes = read(fd, &tmp_answer, sizeof(tmp_answer));
+            if (bytes < 0) {
+                if (bytes == -1)
+                    err = errno;
+                else
+                    err = EIO;
+                close(fd);
+                close(file_fd);
+                unlink(path);
+                free(filename);
+                return err;
+            } 
+
             answer = ntohl(tmp_answer);
 
+            // DEBUGGING
+            printf("Answer variable value: %u\n", answer);
+
             // need to figure out what I want to return here
-            if (answer != 1) 
+            if (answer != 1)
                 return -9;
             else
                 printf("The client is OK with overwrite...\n");
 
-        } else {
+        }
+        else {
             fprintf(stderr, "Copying file failed.\n");
+            free(filename);
+            printf("The errno was: %d\n", errno);
             return errno;
         }
-    } else {
-        exists = 0;
-        tmp_exists = htonl(exists);
-        send(fd, &tmp_exists, sizeof(tmp_exists), 0);
-        // debugging
-        printf("The file doesn't exist on the file server.\n");
+    } 
+    else {
+        tmp_exists = 0;
+        exists = htonl(tmp_exists);
+        send(fd, &exists, sizeof(exists), 0);
     }
     
-// answer was here
     data = malloc(size);
     if (!data) {
         close(fd);
         close(file_fd);
         // need to pass dynamic filename here
-        unlink("home/tokka/copiedfile");
+        unlink(path);
+        free(filename);
         return ENOMEM;
     }
     
@@ -129,9 +176,11 @@ recv_file(int fd, const size_t chunk) {
             close(fd);
             close(file_fd);
             // need to pass dynamic filename here
-            unlink("home/tokka/copiedfile");
+            unlink(path);
+            free(filename);
             return err;
-        } else {
+        } 
+        else {
             if (bytes == 0)
                 break;
         }
@@ -149,9 +198,11 @@ recv_file(int fd, const size_t chunk) {
                 close(fd);
                 close(file_fd);
                 // need to pass dynamic filename here
-                unlink("home/tokka/copiedfile");
+                unlink(path);
+                free(filename);
                 return err;
-            } else {
+            } 
+            else {
                 ptr += bytes;
                 total += bytes;
             }
@@ -167,18 +218,21 @@ recv_file(int fd, const size_t chunk) {
         err = EIO;
     if (err) {
         // need to pass dynamic filename here
-        unlink("home/tokka/copiedfile");
+        unlink(path);
         return err;
     }
 
     printf("Received %zd bytes\n", total);
+    printf("The file %s was copied successfully.\n", path);
+    free(filename);
     return 0;
 }
 
 // function to create the poll server
 void
 create_pserv() {
-    char overwrite[BUFLEN];
+    char path[35] = "/etc/fileserver/";
+    struct stat fsdir;
 
     struct pollfd pfds[MAX_CONN];
     memset(pfds, 0, sizeof(pfds));
@@ -195,6 +249,31 @@ create_pserv() {
     pfds[0].fd = fd;
     pfds[0].events = POLLIN | POLLOUT;
     clients = 1; // number of fds picked up via poll
+
+    // create file server directory if needed
+    if (mkdir(path, S_IRWXU | S_IRGRP | S_IROTH) == -1){
+        if (errno == EEXIST) {
+            if (stat(path, &fsdir) == -1) {
+              perror("stat: file error");
+              exit(EXIT_FAILURE);
+            }
+            
+            if ((fsdir.st_mode & (S_IRWXU + S_IRGRP + S_IROTH)) == 0)  
+                printf("File server directory perms: OK\n");
+            else {
+                printf("Correcting the file server directory perms...\n");
+                if (chmod(path, fsdir.st_mode & (S_IRWXU + S_IRGRP + S_IROTH)) == -1) {
+                    //fprintf(stderr, "chmod error: %d\n", errno);
+                    perror("chmod: set perms error");
+                    exit(EXIT_FAILURE);
+                }
+            }
+        }
+        else {
+           fprintf(stderr, "mkdir failure: %d\n", errno);
+           exit(EXIT_FAILURE);
+        }
+    }
 
     // can be sent to log file
     printf("File server has started, listening on port %s\n", PORT);
@@ -225,7 +304,8 @@ create_pserv() {
             // can be sent to log file
             printf("server: received a new connection from %s\n", s);
         
-        } else {
+        } 
+        else {
             // send to log
             fprintf(stderr,"Listener socket error during polling. revents == %d\n", pfds[0].revents);
             exit(EXIT_FAILURE);
@@ -233,7 +313,6 @@ create_pserv() {
 
         for (int i = 1; i < clients; i++) {
             if (pfds[i].revents & POLLIN | POLLOUT) {
-                char buff[MAX_SIZE + 1];
                 // send to log
                 printf("Found a communicating socket at position: %d\n", i);
                 

@@ -1,5 +1,6 @@
 #include "build.h"
 
+// check if desired file for copying to fileserver exists
 int
 file_exists(char *file) {
     struct stat buffer;
@@ -12,10 +13,56 @@ file_exists(char *file) {
     }    
 }
 
+// get dynamically allocated string
+char
+*get_str() {
+    char *str = NULL, *tmp_str = NULL;
+    size_t size = 0, index = 0;
+    int ch = EOF;
+
+    while (ch) {
+        ch = getc(stdin);
+
+        // check if we should stop
+        if (ch == EOF || ch == '\n')
+            ch = 0;
+
+        // check if we should expand
+        if (size <= index) {
+            size += 5;
+            tmp_str = realloc(str, size);
+
+            if (!tmp_str) {
+                free(str);
+                str = NULL;
+                break;
+            }   
+            str = tmp_str;
+        }
+        str[index++] = ch;
+    }
+    str[index++] = '\0';
+    return str;
+}
+
+// TUI menu for client
 void
 menu_selection(int fd) {
-    uint32_t exists, tmp_exists, answer, tmp_answer;
+    uint32_t exists, tmp_exists, answer, tmp_answer, length, tmp_length;
+    char *filename;
     
+    // handle filename logic here
+    printf("What filename would you like the file server to copy this file as?\nName: ");
+    filename = get_str();
+
+    // was using sizeof
+    tmp_length = strlen(filename);
+    length = htonl(tmp_length);
+
+    send(fd, &length, sizeof(length), 0);
+
+    send(fd, filename, tmp_length, 0);
+
     read(fd, &tmp_exists, sizeof(tmp_exists));
     exists = ntohl(tmp_exists);
 
@@ -26,14 +73,16 @@ menu_selection(int fd) {
         printf("Selection: ");
 
         scanf("%u", &answer);
-        
+        tmp_answer = htonl(answer);
 
         switch((int)answer) {
             case 0:
+                send(fd, &tmp_answer, sizeof(tmp_answer), 0);
                 printf("No action to do, stopping...\n");
                 exit(1);
                 break;
             case 1:
+                send(fd, &tmp_answer, sizeof(tmp_answer), 0);
                 printf("Overwriting the file..\n");
                 break;
             default:
@@ -41,21 +90,21 @@ menu_selection(int fd) {
                 exit(1);
         }
 
-        tmp_answer = htonl(answer);
-        send(fd, &tmp_answer, sizeof(tmp_answer), 0);
+        //tmp_answer = htonl(answer);
+        //send(fd, &tmp_answer, sizeof(tmp_answer), 0);
+        // conditional here for if it did not send properly
 
     } else 
         printf("Copying the file now...\n");
 }
 
+// send the selected file to the file server
 int
 send_file(char *file, int fd, const size_t chunk) {
     const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
     char *data, *ptr, *end;
     int file_fd, err;
     ssize_t bytes;
-
-    // send the file name
 
     file_fd = open(file, O_RDONLY);
 
