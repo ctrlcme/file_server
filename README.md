@@ -28,4 +28,5 @@
 <li> https://stackoverflow.com/questions/9140409/transfer-integer-over-a-socket-in-c#9142150 </li>
 <li> https://beej.us/guide/bgnet/html/split/slightly-advanced-techniques.html#poll </li>
 <li> https://stackoverflow.com/questions/42156041/copying-a-huge-file-using-read-write-and-open-apis-in-linux </li>
+<li> https://www.geeksforgeeks.org/c/c-program-list-files-sub-directories-directory/ </li>
 </ol>
