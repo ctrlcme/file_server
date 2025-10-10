@@ -65,7 +65,7 @@ int
 recv_file(int fd, const size_t chunk) {
     const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
     char *data, *ptr, *end, *filename;
-    char path[35] = "/etc/fileserver/";
+    char path[35] = "/opt/fileserver/"; // GRAB FROM CONFIG - initalize globally?
     ssize_t bytes, total; // learn more about ssize_t use cases
     int file_fd, err;
     uint32_t exists, tmp_exists, answer, tmp_answer, length, tmp_length;
@@ -75,6 +75,7 @@ recv_file(int fd, const size_t chunk) {
     length = ntohl(tmp_length);
 
     // validate the length is reasonable
+    // can I return errno?
     if (length == 0 || length > 200) {
         fprintf(stderr, "Invalid filename length: %u\n", length);
         return -1;
@@ -83,24 +84,23 @@ recv_file(int fd, const size_t chunk) {
     filename = malloc(length);
     if (filename == NULL) {
         perror("malloc failed for filename");
-        return -1;
+        return errno;
     }
     
+    // can I return errno?
     if ((bytes = read(fd, filename, length)) != length) {
         fprintf(stderr, "Read %zd bytes for filename, expected %u\n", bytes, length);
         free(filename);
-        return -1;
+        return -3;
     }
 
     filename[length] = '\0';
 
     printf("Received filename: %s\n", filename);
 
-    // ADD LOGIC FOR CONCAT FILENAME TO FILE SERVER DIR
     // get length from conf file
     strcat(path, filename);
 
-    // change to be dynamic file name
     if ((file_fd = open(path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)) < 0) {
         if (errno == EEXIST) {
             if ((file_fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR)) < 0) {
@@ -131,14 +131,15 @@ recv_file(int fd, const size_t chunk) {
 
             answer = ntohl(tmp_answer);
 
-            // DEBUGGING
-            printf("Answer variable value: %u\n", answer);
-
             // need to figure out what I want to return here
-            if (answer != 1)
-                return -9;
-            else
+            if (answer == 1) {
+                printf("The client is not OK with overwrite...\n");
+                return -8;
+            }
+            else if (answer == 2) 
                 printf("The client is OK with overwrite...\n");
+            else
+                return -9;
 
         }
         else {
@@ -158,7 +159,6 @@ recv_file(int fd, const size_t chunk) {
     if (!data) {
         close(fd);
         close(file_fd);
-        // need to pass dynamic filename here
         unlink(path);
         free(filename);
         return ENOMEM;
@@ -175,7 +175,6 @@ recv_file(int fd, const size_t chunk) {
             free(data);
             close(fd);
             close(file_fd);
-            // need to pass dynamic filename here
             unlink(path);
             free(filename);
             return err;
@@ -197,7 +196,6 @@ recv_file(int fd, const size_t chunk) {
                 free(data);
                 close(fd);
                 close(file_fd);
-                // need to pass dynamic filename here
                 unlink(path);
                 free(filename);
                 return err;
@@ -217,7 +215,6 @@ recv_file(int fd, const size_t chunk) {
     if (close(file_fd))
         err = EIO;
     if (err) {
-        // need to pass dynamic filename here
         unlink(path);
         return err;
     }
@@ -228,11 +225,63 @@ recv_file(int fd, const size_t chunk) {
     return 0;
 }
 
+// for when the client wants to download
+int
+send_file() {
+    return 0;    
+}
+
+// for when client wants to view files on the file server
+int
+list_files(int fd) {
+    struct dirent *dir_entry; // pointer for directory entry
+    uint32_t length, tmp_length = 0;
+    char path[35] = "/opt/fileserver/"; // GRAB FROM CONFIG - initialize globally?
+    char *files;
+    files = (char*)calloc(1, sizeof(char));
+
+    DIR *dir = opendir(path);
+    
+    if (dir == NULL) {
+        perror("Could not open current directory");
+        return errno;
+    }
+    
+    // store in a buffer and re alloc each time a new file in dir is added
+    while ((dir_entry = readdir(dir)) != NULL) {
+        if ((strcmp(dir_entry->d_name, ".") != 0) && (strcmp(dir_entry->d_name, "..")) != 0) {
+            files = realloc(files, (tmp_length + strlen(dir_entry->d_name) + 3) * sizeof(char));
+
+            if (files == NULL) {
+                perror("Memory re-allocation failed");
+                return errno;
+            }
+           
+            strcpy(files + tmp_length, dir_entry->d_name);
+            tmp_length += strlen(dir_entry->d_name);
+            files[tmp_length++] = ' ';
+            files[tmp_length++] = ' ';
+        }
+    }
+
+    files[tmp_length] = '\0';
+    
+    length = htonl(tmp_length);
+    send(fd, &length, sizeof(length), 0);
+    send(fd, files, tmp_length, 0);
+
+    closedir(dir);
+    free(files);
+    free(dir_entry);
+    return 0;
+}
+
 // function to create the poll server
 void
 create_pserv() {
-    char path[35] = "/etc/fileserver/";
+    char path[35] = "/opt/fileserver/"; // GRAB FROM CONFIG - initialize globaly?
     struct stat fsdir;
+    uint32_t choice, tmp_choice;
 
     struct pollfd pfds[MAX_CONN];
     memset(pfds, 0, sizeof(pfds));
@@ -258,7 +307,7 @@ create_pserv() {
               exit(EXIT_FAILURE);
             }
             
-            if ((fsdir.st_mode & (S_IRWXU + S_IRGRP + S_IROTH)) == 0)  
+            if (fsdir.st_mode & (S_IRWXU + S_IRGRP + S_IROTH))  
                 printf("File server directory perms: OK\n");
             else {
                 printf("Correcting the file server directory perms...\n");
@@ -304,27 +353,51 @@ create_pserv() {
             // can be sent to log file
             printf("server: received a new connection from %s\n", s);
         
-        } 
-        else {
+        }
+        else if (pfds[0].revents != 0) {
             // send to log
-            fprintf(stderr,"Listener socket error during polling. revents == %d\n", pfds[0].revents);
+            fprintf(stderr,"Unexpected event during polling. revents == %d\n", pfds[0].revents);
             exit(EXIT_FAILURE);
         }
 
         for (int i = 1; i < clients; i++) {
-            if (pfds[i].revents & POLLIN | POLLOUT) {
+            // removed | POLLOUT
+            if (pfds[i].revents & (POLLIN | POLLOUT)) {
                 // send to log
-                printf("Found a communicating socket at position: %d\n", i);
+                //printf("Found a communicating socket at position: %d\n", i);
                 
+                // Errors with data read handled here - i.e client closes
+                if ((read(pfds[i].fd, &tmp_choice, sizeof(tmp_choice))) <= 0) {
+                    printf("The client has closed the connection.\n\n");
+                    close(pfds[i].fd);
+                    pfds[i] = pfds[clients-1];
+                    clients--;
+                    continue;
+                }
+                choice = ntohl(tmp_choice);
 
-                //read(pfds[i].fd, overwrite, sizeof(overwrite));
-                //printf("overwrite value: %s\n", overwrite);
-
-                if ((error = recv_file(pfds[i].fd, 0)) < 0)
-                    fprintf(stderr, "recv_file: return value of %d\n", error);
+                if (choice == 1) {
+                    printf("Client (%s) wants to upload...\n", s);
+                    if ((error = recv_file(pfds[i].fd, 0)) != 0)
+                        fprintf(stderr, "recv_file: return value of %d\n", error);
+                }
+                else if (choice == 2) {
+                    // send_file(); - to be added
+                    printf("Client (%s) wants to download...\n", s);
+                }
+                else if (choice == 3) {
+                    printf("Client (%s) wants to see files...\n", s);
+                    if ((error = list_files(pfds[i].fd)) != 0)
+                        fprintf(stderr, "list_files: return value of %d\n", error);
+                    continue;
+                }
+                else if (choice == 4) {
+                    // remove_file(); - to be added
+                    printf("Client (%s) wants to remove a file...\n", s);
+                }
             }
-            // Disconnects handled here
-            if (pfds[i].revents & POLLERR | POLLHUP){
+            // Errors with connection handled here
+            if (pfds[i].revents & (POLLERR | POLLHUP)){
                 printf("The client has closed the connection.\n\n");
                 pfds[i] = pfds[clients-1];
                 clients--;

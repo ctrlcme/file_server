@@ -1,18 +1,19 @@
 #ifndef FILE_SERVER_H
 #define FILE_SERVER_H      /* Prevent accidental double inclusion */
 
+#include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <sys/stat.h>
 #include <string.h>
-#include <sys/types.h>
 #include <netdb.h>
 #include <unistd.h>
 #include <poll.h>
 #include <errno.h>
-#include <arpa/inet.h>
 #include <fcntl.h>
 
 #define PORT "5000"
