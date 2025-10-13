@@ -10,8 +10,8 @@ file_exists(char *file) {
     if(stat(file, &buffer) == 0)
         return (S_ISREG(buffer.st_mode));
     else {
-        fprintf(stderr, "Usage error: The file %s does not exist.\n", file);
-        exit(EXIT_FAILURE);
+        fprintf(stderr, "Usage error: The file (%s) does not exist.\n", file);
+        return -16;
     }    
 }
 
@@ -61,11 +61,11 @@ send_file(char *file, int fd, const size_t chunk) {
     file_fd = open(file, O_RDONLY);
 
     if (file_fd == -1) {
-        exit(errno);
+        return errno;
     }
     
     data = malloc(size);
-    if(!data) {
+    if (!data) {
         close(fd);
         close(file_fd);
         return ENOMEM;
@@ -119,7 +119,7 @@ send_file(char *file, int fd, const size_t chunk) {
     if (close(file_fd))
         err = EIO;
     if (err) 
-        return(err);
+        return err;
     
     // add logic to check that the bytes sent == bytes received
     // perhaps some logic to validate the file sent OK?
@@ -175,7 +175,146 @@ upload_opt(int fd) {
 
 // Handle the download option selected from menu_selection
 int
-download_opt(int fd) {
+download_opt(int fd, const size_t chunk) {
+    const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
+    char *data, *ptr, *end, *filename, *dir;
+    ssize_t bytes, total;
+    int file_fd, err;
+    uint32_t length, tmp_length, able, tmp_able;
+
+    printf("\nWhat file would you like to download from the server?\nName: ");
+    filename = get_str();
+
+    printf("\nWhat directory would you like to download this file to?\nName: ");
+    dir = get_str();
+    
+    if (file_exists(dir) == -16) {
+        able = htonl(-16);
+        send(fd, &able, sizeof(able), 0);
+        return -16;
+    }
+    else if (file_exists(dir) != 0) {
+        fprintf(stderr, "Usage error: The directory you specified (%s) is NOT a directory.\n", dir);
+        able = htonl(-4);
+        send(fd, &able, sizeof(able), 0);
+        return -4;
+    }
+
+    if (dir[strlen(dir) - 1] != '/') {
+        fprintf(stderr, "Usage error: Please put a '/' at the end of the directory you enter.\n");
+        able = htonl(-5);
+        send(fd, &able, sizeof(able), 0);
+        return -5;
+    }
+
+    able = htonl(0);
+    send(fd, &able, sizeof(able), 0);
+
+    // realloc dir with filename attached
+    dir = realloc(dir, (strlen(dir) + strlen(filename)));
+
+    if (!dir) {
+        free(dir);
+        free(filename);
+        perror("realloc failed");
+        return errno;
+    }  
+
+    strcat(dir, filename);
+
+    tmp_length = strlen(filename);
+    length = htonl(tmp_length);
+    send(fd, &length, sizeof(length), 0);
+    send(fd, filename, tmp_length, 0);
+
+    read(fd, &tmp_able, sizeof(tmp_able));
+    able = ntohl(tmp_able);
+
+    if (able != 0) 
+        return able;
+
+    if ((file_fd = open(dir, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)) < 0) {
+        if (errno == EEXIST) {
+            // need to handle overwriting on client side
+            fprintf(stderr, "Downloading the file failed.\n");
+            free(filename);
+            printf("The errno was: %d\n", errno);
+            return errno;
+        }
+        else {
+            fprintf(stderr, "Downloading the file failed.\n");
+            free(filename);
+            printf("The errno was: %d\n", errno);
+            return errno;
+        }
+    }
+    
+    data = malloc(size);
+    if (!data) {
+        close(fd);
+        close(file_fd);
+        unlink(dir);
+        free(filename);
+        return ENOMEM;
+    }
+
+    while (1) {
+        bytes = read(fd, data, size);
+        if (bytes < 0) {
+            if (bytes == -1)
+                err = errno;
+            else
+                err = EIO;
+            free(data);
+            close(fd);
+            close(file_fd);
+            unlink(dir);
+            free(filename);
+            return err;
+        }
+        else {
+            if (bytes == 0)
+                break;
+        }
+
+        ptr = data;
+        end = data + bytes;
+        while (ptr < end) {
+            bytes = write(file_fd, ptr, (size_t)(end - ptr));
+            if (bytes < 0) {
+                if (bytes == -1)
+                    err = errno;
+                else
+                    err = EIO;
+                free(data);
+                close(fd);
+                close(file_fd);
+                unlink(dir);
+                free(filename);
+                return err;
+            }
+            else {
+                ptr += bytes;
+                total += bytes;
+            }
+        }
+    }
+
+    free(data);
+
+    err = 0;
+    if (close(fd))
+        err = EIO;
+    if (close(file_fd))
+        err = EIO;
+    if (err) {
+        unlink(dir);
+        return err;
+    }
+
+    printf("The file %s was downloaded successfully.\n", dir);
+    free(filename);
+
     return 0;
 }
 
@@ -213,7 +352,8 @@ int
 remove_opt(int fd) {
     uint32_t length, tmp_length, able, tmp_able;
     char *filename;
-    printf("\nWhat filename would you like the file server to remove?\nName: ");
+    printf("\nWhat file would you like the file server to remove?\nName: ");
+
     filename = get_str();
     tmp_length = strlen(filename);
     length = htonl(tmp_length);
@@ -262,9 +402,15 @@ menu_selection(int fd) {
                 running = 0;
                 break;
             case 2:
-                printf("\nNot yet implemented >.>\n");
                 send(fd, &tmp_choice, sizeof(tmp_choice), 0);
-                running = 0; // remove when implemented?
+                if ((error = download_opt(fd, 0)) != 0) 
+                    fprintf(stderr, "download_opt: return value of %d\n", error);
+                
+                // Don't display menu right away
+                printf("\nPress enter to continue.");
+                fflush(stdout);
+                while ((c = getchar()) != '\n' && c != EOF);
+
                 break;
             case 3:
                 printf("\nListing the contents of file server...\n");

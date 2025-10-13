@@ -188,7 +188,7 @@ recv_file(int fd, const size_t chunk) {
         end = data + bytes;
         while (ptr < end) {
             bytes = write(file_fd, ptr, (size_t)(end - ptr));
-            if (bytes < 0){
+            if (bytes < 0) {
                 if (bytes == -1)
                     err = errno;
                 else
@@ -225,12 +225,6 @@ recv_file(int fd, const size_t chunk) {
     return 0;
 }
 
-// for when the client wants to download
-int
-send_file() {
-    return 0;    
-}
-
 // to be used with remove_file()
 int
 file_exists(char *file) {
@@ -242,6 +236,118 @@ file_exists(char *file) {
         fprintf(stderr, "Usage error: The file %s does not exist.\n", file);
         return errno;
     }    
+}
+
+// for when the client wants to download
+int
+send_file(int fd, const size_t chunk) {
+    const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
+    char *filename, *data, *ptr, *end;
+    char path[35] = "/opt/fileserver/"; // GRAB FROM CONFIG - initialize globally?
+    ssize_t bytes;
+    int file_fd, err;
+    uint32_t length, tmp_length, able;
+
+    // receive the file name length first
+    read(fd, &tmp_length, sizeof(tmp_length));
+    length = ntohl(tmp_length);
+
+    // validate the length is reasonable
+    if (length == 0 || length > 200) {
+        fprintf(stderr, "Invalid filename length: %u\n", length);
+        return -1;
+    }
+
+    filename = malloc(length);
+    if (filename == NULL) {
+        perror("malloc failed for filename");
+        return errno;
+    }
+
+    if ((bytes = read(fd, filename, length)) != length) {
+        fprintf(stderr, "Read %zd bytes for filename, expected %u\n", bytes, length);
+        free(filename);
+        return -3;
+    }
+
+    filename[length] = '\0';
+
+    // get length from conf file
+    strcat(path, filename);
+
+    printf("Received filename (%s) for download to client\n", filename);
+
+    if (file_exists(path) == 0) {
+        fprintf(stderr, "The client attempted to download the directory: %s\n", filename);
+        return -4;
+    }
+
+    file_fd = open(path, O_RDONLY);
+
+    if(file_fd == -1)
+        return errno;
+
+    data = malloc(size);
+    if (!data) {
+        close(fd);
+        close(file_fd);
+        return ENOMEM;
+    }
+
+    able = htonl(0);
+    send(fd, &able, sizeof(able), 0);
+
+    while (1) {
+        bytes = read(file_fd, data, size);
+
+        if (bytes < 0) {
+            if (bytes == -1)
+                err = errno;
+            else
+                err = EIO;
+            free(data);
+            close(fd);
+            close(file_fd);
+            return err;
+        }
+        else {
+            if (bytes == 0)
+                break;
+        }
+
+        ptr = data;
+        end = data + bytes;
+        while (ptr < end) {
+            bytes = send(fd, ptr, (size_t)(end - ptr), 0);
+
+            if (bytes < 0) {
+                if (bytes == -1)
+                    err = errno;
+                else
+                    err = EIO;
+                free(data);
+                close(fd);
+                close(file_fd);
+                return err;
+            }
+            else {
+                ptr += bytes;
+            }
+        }
+    }
+
+    free(data);
+
+    err = 0;
+    if (close(fd))
+        err = EIO;
+    if (close(file_fd))
+        err = EIO;
+    if (err)
+        return err;
+
+    printf("\nThe file: %s sent successfully.\n", filename);
+    return 0;    
 }
 
 // for when the client wants to remove a file
@@ -452,8 +558,20 @@ create_pserv() {
                         fprintf(stderr, "recv_file: return value of %d\n", error);
                 }
                 else if (choice == 2) {
-                    // send_file(); - to be added
                     printf("Client (%s) wants to download...\n", s);
+                    read(pfds[i].fd, &able, sizeof(able));
+
+                    if (able != 0) {
+                        fprintf(stderr, "Error on client-side.\n");
+                        continue;
+                    }
+                    
+                    if ((error = send_file(pfds[i].fd, 0)) != 0) {
+                        fprintf(stderr, "send_file: return value of %d\n", error);
+                        able = htonl(error);
+                        send(pfds[i].fd, &able, sizeof(able), 0); // let client know download failed
+                    }
+                    continue;
                 }
                 else if (choice == 3) {
                     printf("Client (%s) wants to see files...\n", s);
