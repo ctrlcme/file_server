@@ -231,6 +231,76 @@ send_file() {
     return 0;    
 }
 
+// to be used with remove_file()
+int
+file_exists(char *file) {
+    struct stat buffer;
+
+    if(stat(file, &buffer) == 0)
+        return (S_ISREG(buffer.st_mode));
+    else {
+        fprintf(stderr, "Usage error: The file %s does not exist.\n", file);
+        return errno;
+    }    
+}
+
+// for when the client wants to remove a file
+int
+remove_file(int fd) {
+    char *filename;
+    char path[35] = "/opt/fileserver/"; // GRAB FROM CONFIG - initalize globally?
+    ssize_t bytes;
+    uint32_t length, tmp_length, able;
+
+    // receive the file name length first
+    read(fd, &tmp_length, sizeof(tmp_length));
+    length = ntohl(tmp_length);
+
+    // validate the length is reasonable
+    // can I return errno?
+    if (length == 0 || length > 200) {
+        fprintf(stderr, "Invalid filename length: %u\n", length);
+        return -1;
+    }
+    
+    filename = malloc(length);
+    if (filename == NULL) {
+        perror("malloc failed for filename");
+        return errno;
+    }
+    
+    // can I return errno?
+    if ((bytes = read(fd, filename, length)) != length) {
+        fprintf(stderr, "Read %zd bytes for filename, expected %u\n", bytes, length);
+        free(filename);
+        return -3;
+    }
+
+    filename[length] = '\0';
+
+    // get length from conf file
+    strcat(path, filename);
+
+    if (file_exists(path) == 0) {
+        fprintf(stderr, "The client attempted to remove the directory: %s\n", filename);
+        return -4;
+    }
+
+    printf("Received filename (%s) for deletion\n", filename);
+
+    if (remove(path) == 0) {
+        printf("%s was deleted successfully\n", filename);
+        able = htonl(0);
+        send(fd, &able, sizeof(able), 0);
+    }
+    else {
+        fprintf(stderr, "Error with deleting file: %s\n", filename);
+        return errno;
+    }
+
+    return 0;
+}
+
 // for when client wants to view files on the file server
 int
 list_files(int fd) {
@@ -281,7 +351,7 @@ void
 create_pserv() {
     char path[35] = "/opt/fileserver/"; // GRAB FROM CONFIG - initialize globaly?
     struct stat fsdir;
-    uint32_t choice, tmp_choice;
+    uint32_t choice, tmp_choice, able;
 
     struct pollfd pfds[MAX_CONN];
     memset(pfds, 0, sizeof(pfds));
@@ -392,11 +462,16 @@ create_pserv() {
                     continue;
                 }
                 else if (choice == 4) {
-                    // remove_file(); - to be added
                     printf("Client (%s) wants to remove a file...\n", s);
+                    if ((error = remove_file(pfds[i].fd)) != 0) {
+                        fprintf(stderr, "remove_file: return value of %d\n", error);
+                        able = htonl(error);
+                        send(pfds[i].fd, &able, sizeof(able), 0); // let client know removal failed
+                    }
+                    continue;
                 }
             }
-            // Errors with connection handled here
+// Errors with connection handled here
             if (pfds[i].revents & (POLLERR | POLLHUP)){
                 printf("The client has closed the connection.\n\n");
                 pfds[i] = pfds[clients-1];

@@ -210,7 +210,24 @@ list_opt(int fd) {
 
 // handle the remove option selected from menu_selection
 int
-remove_opt() {
+remove_opt(int fd) {
+    uint32_t length, tmp_length, able, tmp_able;
+    char *filename;
+    printf("\nWhat filename would you like the file server to remove?\nName: ");
+    filename = get_str();
+    tmp_length = strlen(filename);
+    length = htonl(tmp_length);
+    send(fd, &length, sizeof(length), 0);
+    send(fd, filename, tmp_length, 0);
+    read(fd, &tmp_able, sizeof(tmp_able));
+    able = ntohl(tmp_able);
+
+    if (able != 0) {
+        return able;
+    }
+
+    printf("The file server successfully deleted the file: %s\n", filename);
+
     return 0;
 }
 
@@ -253,7 +270,7 @@ menu_selection(int fd) {
                 printf("\nListing the contents of file server...\n");
                 send(fd, &tmp_choice, sizeof(tmp_choice), 0);
                 if ((error = list_opt(fd)) != 0)
-                    fprintf(stderr, "list_files: return value of %d\n", error);
+                    fprintf(stderr, "list_opt: return value of %d\n", error);
 
                 // Don't display menu right away
                 printf("\nPress enter to continue.");
@@ -262,9 +279,17 @@ menu_selection(int fd) {
 
                 break;
             case 4:
-                printf("\nNot yet implemented >.>\n");
                 send(fd, &tmp_choice, sizeof(tmp_choice), 0);
-                running = 0; // remove when implemented?
+                if ((error = remove_opt(fd)) != 0) {
+                    if (error == 2)
+                        fprintf(stderr, "Unable to delete - The file does not exist on fileserver.\n");
+                    fprintf(stderr, "remove_opt: return value of %d\n", error);
+                }
+                // Don't display menu right away
+                printf("\nPress enter to continue.");
+                fflush(stdout);
+                while ((c = getchar()) != '\n' && c != EOF);
+
                 break;
             case 5:
                 printf("\nExiting...\n");
