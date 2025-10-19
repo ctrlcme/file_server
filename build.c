@@ -66,9 +66,9 @@ recv_file(int fd, const size_t chunk) {
     const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
     char *data, *ptr, *end, *filename;
     char path[35] = "/opt/fileserver/"; // GRAB FROM CONFIG - initalize globally?
-    ssize_t bytes, total; // learn more about ssize_t use cases
+    ssize_t bytes, total = 0; // learn more about ssize_t use cases
     int file_fd, err;
-    uint32_t exists, tmp_exists, answer, tmp_answer, length, tmp_length;
+    uint32_t exists, tmp_exists, answer, tmp_answer, length, tmp_length, total_size;
 
     // receive the file name length first
     read(fd, &tmp_length, sizeof(tmp_length));
@@ -163,15 +163,15 @@ recv_file(int fd, const size_t chunk) {
         free(filename);
         return ENOMEM;
     }
-    
+   
+    read(fd, &total_size, sizeof(total_size));
+    total_size = ntohl(total_size);
+
     // copy loop
-    while(1) {
+    while(total < total_size) {
         bytes = read(fd, data, size);
         if (bytes < 0) {
-            if (bytes == -1) 
-                err = errno;
-            else
-                err = EIO;
+            err = errno;
             free(data);
             close(fd);
             close(file_fd);
@@ -179,20 +179,17 @@ recv_file(int fd, const size_t chunk) {
             free(filename);
             return err;
         } 
-        else {
-            if (bytes == 0)
-                break;
-        }
+        else if (bytes == 0)
+            continue;
+
+        total += bytes;
         
         ptr = data;
         end = data + bytes;
         while (ptr < end) {
             bytes = write(file_fd, ptr, (size_t)(end - ptr));
             if (bytes < 0) {
-                if (bytes == -1)
-                    err = errno;
-                else
-                    err = EIO;
+                err = errno;
                 free(data);
                 close(fd);
                 close(file_fd);
@@ -200,27 +197,25 @@ recv_file(int fd, const size_t chunk) {
                 free(filename);
                 return err;
             } 
-            else {
                 ptr += bytes;
-                total += bytes;
-            }
         }
     }
 
     free(data);
 
     err = 0;
-    if (close(fd))
-        err = EIO;
-    if (close(file_fd))
-        err = EIO;
-    if (err) {
+    if (close(file_fd)) {
         unlink(path);
-        return err;
+        return EIO;
     }
 
     printf("Received %zd bytes\n", total);
-    printf("The file %s was copied successfully.\n", path);
+
+    if (total != total_size)
+        fprintf(stderr, "The total downloaded bytes does not match the total size of the file\n");
+    else
+        printf("The file %s was copied successfully.\n", path);
+
     free(filename);
     return 0;
 }
@@ -242,11 +237,12 @@ file_exists(char *file) {
 int
 send_file(int fd, const size_t chunk) {
     const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
+    struct stat st;
     char *filename, *data, *ptr, *end;
     char path[35] = "/opt/fileserver/"; // GRAB FROM CONFIG - initialize globally?
-    ssize_t bytes;
+    ssize_t bytes, total = 0;
     int file_fd, err;
-    uint32_t length, tmp_length, able;
+    uint32_t length, tmp_length, able, total_size;
 
     // receive the file name length first
     read(fd, &tmp_length, sizeof(tmp_length));
@@ -294,8 +290,16 @@ send_file(int fd, const size_t chunk) {
         return ENOMEM;
     }
 
+    if (fstat(file_fd, &st) == -1) {
+        perror("stat failed");
+        return errno;
+    }
+
     able = htonl(0);
     send(fd, &able, sizeof(able), 0);
+
+    total_size = htonl((uint32_t)st.st_size);
+    send(fd, &total_size, sizeof(total_size), 0);
 
     while (1) {
         bytes = read(file_fd, data, size);
@@ -314,6 +318,8 @@ send_file(int fd, const size_t chunk) {
             if (bytes == 0)
                 break;
         }
+
+        total += bytes;
 
         ptr = data;
         end = data + bytes;
@@ -339,14 +345,21 @@ send_file(int fd, const size_t chunk) {
     free(data);
 
     err = 0;
-    if (close(fd))
-        err = EIO;
+    //if (close(fd))
+    //    err = EIO;
     if (close(file_fd))
         err = EIO;
     if (err)
         return err;
 
-    printf("\nThe file: %s sent successfully.\n", filename);
+    printf("Sent %zd bytes\n", total);
+
+    if (total != total_size) {
+        fprintf(stderr, "The total sent bytes does not match the total size of the file\n");
+    }
+    else
+        printf("\nThe file: %s sent successfully.\n", filename);
+    
     return 0;    
 }
 
@@ -537,14 +550,13 @@ create_pserv() {
         }
 
         for (int i = 1; i < clients; i++) {
-            // removed | POLLOUT
             if (pfds[i].revents & (POLLIN | POLLOUT)) {
                 // send to log
                 //printf("Found a communicating socket at position: %d\n", i);
                 
                 // Errors with data read handled here - i.e client closes
                 if ((read(pfds[i].fd, &tmp_choice, sizeof(tmp_choice))) <= 0) {
-                    printf("The client has closed the connection.\n\n");
+                    printf("The client has closed the connection -1.\n\n");
                     close(pfds[i].fd);
                     pfds[i] = pfds[clients-1];
                     clients--;
@@ -554,8 +566,20 @@ create_pserv() {
 
                 if (choice == 1) {
                     printf("Client (%s) wants to upload...\n", s);
-                    if ((error = recv_file(pfds[i].fd, 0)) != 0)
+                    read(pfds[i].fd, &able, sizeof(able));
+
+                    if (able != 0) {
+                        fprintf(stderr, "Error on client-side.\n");
+                        continue;
+                    }
+
+                    if ((error = recv_file(pfds[i].fd, 0)) != 0) {
                         fprintf(stderr, "recv_file: return value of %d\n", error);
+                        //able = htonl(error);
+                        //send(pfds[i].fd, &able, sizeof(able), 0); // let client know upload failed
+                    }
+
+                    continue;
                 }
                 else if (choice == 2) {
                     printf("Client (%s) wants to download...\n", s);
@@ -571,6 +595,7 @@ create_pserv() {
                         able = htonl(error);
                         send(pfds[i].fd, &able, sizeof(able), 0); // let client know download failed
                     }
+
                     continue;
                 }
                 else if (choice == 3) {
@@ -591,7 +616,13 @@ create_pserv() {
             }
 // Errors with connection handled here
             if (pfds[i].revents & (POLLERR | POLLHUP)){
-                printf("The client has closed the connection.\n\n");
+                printf("The client has closed the connection -2.\n\n");
+                pfds[i] = pfds[clients-1];
+                clients--;
+            }
+
+            if (pfds[i].revents & POLLNVAL){
+                printf("The client has closed the connection -3.\n\n");
                 pfds[i] = pfds[clients-1];
                 clients--;
             }

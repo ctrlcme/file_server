@@ -1,6 +1,6 @@
 #include "build.h"
 
-char *path;
+//char *path;
 
 // check if desired file for copying to fileserver exists
 int
@@ -56,7 +56,9 @@ send_file(char *file, int fd, const size_t chunk) {
     const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
     char *data, *ptr, *end;
     int file_fd, err;
-    ssize_t bytes;
+    struct stat st;
+    ssize_t bytes, total = 0;
+    uint32_t total_size;
 
     file_fd = open(file, O_RDONLY);
 
@@ -70,6 +72,14 @@ send_file(char *file, int fd, const size_t chunk) {
         close(file_fd);
         return ENOMEM;
     }
+
+    if (fstat(file_fd, &st) == -1) {
+        perror("stat failed");
+        return errno;
+    }
+
+    total_size = htonl((uint32_t)st.st_size);
+    send(fd, &total_size, sizeof(total_size), 0);
 
     while(1) {
         bytes = read(file_fd, data, size);
@@ -88,6 +98,8 @@ send_file(char *file, int fd, const size_t chunk) {
             if (bytes == 0)
                 break;
         }
+
+        total += bytes;
 
         ptr = data;
         end = data + bytes;
@@ -114,26 +126,48 @@ send_file(char *file, int fd, const size_t chunk) {
     free(data);
 
     err = 0;
-    if (close(fd))
-        err = EIO;
     if (close(file_fd))
-        err = EIO;
-    if (err) 
-        return err;
+        return EIO;
     
-    // add logic to check that the bytes sent == bytes received
-    // perhaps some logic to validate the file sent OK?
-    printf("\nThe file: %s sent successfully.\n", file);
+    printf("Sent %zd bytes\n", total);
+
+    if (total != total_size) {
+        fprintf(stderr, "The total sent bytes does not match the total size of the file\n");
+    }
+    else
+        printf("The file %s sent successfully.\n", file);
+
     return 0;
 }
 
 // Handle the processing for upload option from menu_selection
-void
+int
 upload_opt(int fd) {
-    uint32_t exists, tmp_exists, length, tmp_length, answer, tmp_answer;
-    char *filename;
-    printf("\nWhat filename would you like the file server to copy this file as?\nName: ");
+    uint32_t exists, tmp_exists, length, tmp_length, answer, tmp_answer, able;
+    char *filename, *path;
+    int running = 1;
+
+    printf("\nWhat file would you like to upload to the server?\nName: ");
+    path = get_str();
+
+    if (file_exists(path) == -16) {
+        able = htonl(-16);
+        send(fd, &able, sizeof(able), 0);
+        return -16;
+    }
+    else if (file_exists(path) == 0) {
+        fprintf(stderr, "Usage error: The file %s is a directory.\n", path);
+        able = htonl(-7);
+        send(fd, &able, sizeof(able), 0);
+        return -7;
+    }
+
+    able = htonl(0);
+    send(fd, &able, sizeof(able), 0);
+
+    printf("\nWhat filename would you like the file server to save this file as?\nName: ");
     filename = get_str();
+
     tmp_length = strlen(filename);
     length = htonl(tmp_length);
     send(fd, &length, sizeof(length), 0);
@@ -151,26 +185,31 @@ upload_opt(int fd) {
         tmp_answer = htonl(answer);
 
         // Do I need to cast to an int?
-        switch(answer) {
-            case 1:
-                send(fd, &tmp_answer, sizeof(tmp_answer), 0);
-                printf("\nNo action to do, stopping...\n");
-                exit(1);
-                break;
-            case 2:
-                send(fd, &tmp_answer, sizeof(tmp_answer), 0);
-                printf("\nOverwriting the file..\n");
-                send_file(path, fd, 0);
-                break;
-            default:
-                printf("\nPlease select a valid option (1 or 2)\n");
-                exit(1);
+        while (running) {
+            switch(answer) {
+                case 1:
+                    send(fd, &tmp_answer, sizeof(tmp_answer), 0);
+                    printf("\nNo action to do, stopping...\n");
+                    running = 0;
+                    break;
+                case 2:
+                    send(fd, &tmp_answer, sizeof(tmp_answer), 0);
+                    printf("\nOverwriting the file..\n");
+                    send_file(path, fd, 0);
+                    running = 0;
+                    break;
+                default:
+                    printf("\nPlease select a valid option (1 or 2)\n");
+                    break;
+            }
         }
     } 
     else { 
-        printf("\nCopying the file now...\n");
+        printf("\nUploading the file now...\n");
         send_file(path, fd, 0);
     }
+
+    return 0;
 }
 
 // Handle the download option selected from menu_selection
@@ -178,9 +217,9 @@ int
 download_opt(int fd, const size_t chunk) {
     const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
     char *data, *ptr, *end, *filename, *dir;
-    ssize_t bytes, total;
+    ssize_t bytes, total = 0;
     int file_fd, err;
-    uint32_t length, tmp_length, able, tmp_able;
+    uint32_t length, tmp_length, able, tmp_able, total_size;
 
     printf("\nWhat file would you like to download from the server?\nName: ");
     filename = get_str();
@@ -235,15 +274,21 @@ download_opt(int fd, const size_t chunk) {
 
     if ((file_fd = open(dir, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)) < 0) {
         if (errno == EEXIST) {
+            if ((file_fd = open(dir, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR)) < 0) {
             // need to handle overwriting on client side
             fprintf(stderr, "Downloading the file failed.\n");
             free(filename);
+            free(dir);
             printf("The errno was: %d\n", errno);
             return errno;
+            }
+
+            printf("This file already exists in the specified directory, overwriting...\n");
         }
         else {
             fprintf(stderr, "Downloading the file failed.\n");
             free(filename);
+            free(dir);
             printf("The errno was: %d\n", errno);
             return errno;
         }
@@ -255,65 +300,66 @@ download_opt(int fd, const size_t chunk) {
         close(file_fd);
         unlink(dir);
         free(filename);
+        free(dir);
         return ENOMEM;
     }
 
-    while (1) {
+    read(fd, &total_size, sizeof(total_size));
+    total_size = ntohl(total_size);
+
+    while (total < total_size) {
         bytes = read(fd, data, size);
         if (bytes < 0) {
-            if (bytes == -1)
-                err = errno;
-            else
-                err = EIO;
+            err = errno;
             free(data);
             close(fd);
             close(file_fd);
             unlink(dir);
             free(filename);
+            free(dir);
             return err;
         }
-        else {
-            if (bytes == 0)
-                break;
-        }
+        else if (bytes == 0)
+            continue;
+
+        total += bytes;
 
         ptr = data;
         end = data + bytes;
         while (ptr < end) {
             bytes = write(file_fd, ptr, (size_t)(end - ptr));
             if (bytes < 0) {
-                if (bytes == -1)
-                    err = errno;
-                else
-                    err = EIO;
+                err = errno;
                 free(data);
                 close(fd);
                 close(file_fd);
                 unlink(dir);
                 free(filename);
+                free(dir);
                 return err;
             }
-            else {
-                ptr += bytes;
-                total += bytes;
-            }
+            ptr += bytes;
         }
     }
 
     free(data);
 
     err = 0;
-    if (close(fd))
-        err = EIO;
-    if (close(file_fd))
-        err = EIO;
-    if (err) {
+    if (close(file_fd)) {
         unlink(dir);
-        return err;
+        return EIO;
     }
 
-    printf("The file %s was downloaded successfully.\n", dir);
+    printf("Received %zd bytes\n", total);
+
+    if (total != total_size) {
+        fprintf(stderr, "The total downloaded bytes does not match the total size of the file\n");
+    }
+    else
+        printf("The file %s was downloaded successfully.\n", dir);
+
     free(filename);
+    free(dir);
 
     return 0;
 }
@@ -344,6 +390,8 @@ list_opt(int fd) {
     files[length] = '\0';
 
     printf("Files on file server :\n%s\n", files);
+
+    free(files);
     return 0;
 }
 
@@ -367,7 +415,8 @@ remove_opt(int fd) {
     }
 
     printf("The file server successfully deleted the file: %s\n", filename);
-
+    
+    free(filename);
     return 0;
 }
 
@@ -398,14 +447,20 @@ menu_selection(int fd) {
         switch (choice) {
             case 1:
                 send(fd, &tmp_choice, sizeof(tmp_choice), 0);
-                upload_opt(fd);
-                running = 0;
+                if ((error = upload_opt(fd)) != 0)
+                    fprintf(stderr, "upload_opt: return value of %d\n", error);
+
+                // Don't display menu right away
+                printf("\nPress enter to continue.");
+                fflush(stdout);
+                while ((c = getchar()) != '\n' && c != EOF);
+
                 break;
             case 2:
                 send(fd, &tmp_choice, sizeof(tmp_choice), 0);
                 if ((error = download_opt(fd, 0)) != 0) 
                     fprintf(stderr, "download_opt: return value of %d\n", error);
-                
+
                 // Don't display menu right away
                 printf("\nPress enter to continue.");
                 fflush(stdout);
@@ -422,20 +477,18 @@ menu_selection(int fd) {
                 printf("\nPress enter to continue.");
                 fflush(stdout);
                 while ((c = getchar()) != '\n' && c != EOF);
-
                 break;
             case 4:
                 send(fd, &tmp_choice, sizeof(tmp_choice), 0);
                 if ((error = remove_opt(fd)) != 0) {
                     if (error == 2)
-                        fprintf(stderr, "Unable to delete - The file does not exist on fileserver.\n");
+                        fprintf(stderr, "remove_opt: the file does not exist on fileserver.\n");
                     fprintf(stderr, "remove_opt: return value of %d\n", error);
                 }
                 // Don't display menu right away
                 printf("\nPress enter to continue.");
                 fflush(stdout);
                 while ((c = getchar()) != '\n' && c != EOF);
-
                 break;
             case 5:
                 printf("\nExiting...\n");
@@ -451,15 +504,12 @@ menu_selection(int fd) {
 
 int
 main(int argc, char *argv[]){ 
-    path = argv[2];
+    //path = argv[2];
 
-    if (argc != 3) {
-        fprintf(stderr,"How to run:\n%s [SERVER] [FILE] \n", argv[0]);
+    if (argc != 2) {
+        fprintf(stderr,"How to run:\n%s [SERVER]\n", argv[0]);
         exit(EXIT_FAILURE);
-    } else if (file_exists(argv[2]) == 0) {
-        fprintf(stderr, "Usage error: The file %s is a directory.\n", argv[2]);
-        exit(EXIT_FAILURE);
-    }
+    } 
 
     int i, fd;
 
