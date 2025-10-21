@@ -3,6 +3,10 @@
 #define BACKLOG 10
 #define MAX_CONN 10
 
+/* GENERAL CLEANUP STILL NEEDS TO OCCUR 
+ * WITH VARS, MEM, RETURNS, ETC.
+ * BUT THIS SEEMINGLY WORKS WITH MULTIPLE CONNS */
+
 // get sockaddr, IPv4 or IPv6
 void
 *get_in_addr(struct sockaddr *sa) {
@@ -234,6 +238,7 @@ file_exists(char *file) {
 }
 
 // for when the client wants to download
+// need to free more memory throughout - too lazy to add right now
 int
 send_file(int fd, const size_t chunk) {
     const size_t size = (chunk > 0) ? chunk : DEFAULT_CHUNK;
@@ -345,12 +350,10 @@ send_file(int fd, const size_t chunk) {
     free(data);
 
     err = 0;
-    //if (close(fd))
-    //    err = EIO;
-    if (close(file_fd))
+    if (close(file_fd)) {
         err = EIO;
-    if (err)
         return err;
+    }
 
     printf("Sent %zd bytes\n", total);
 
@@ -376,7 +379,6 @@ remove_file(int fd) {
     length = ntohl(tmp_length);
 
     // validate the length is reasonable
-    // can I return errno?
     if (length == 0 || length > 200) {
         fprintf(stderr, "Invalid filename length: %u\n", length);
         return -1;
@@ -389,6 +391,7 @@ remove_file(int fd) {
     }
     
     // can I return errno?
+    // doing custom error codes for now
     if ((bytes = read(fd, filename, length)) != length) {
         fprintf(stderr, "Read %zd bytes for filename, expected %u\n", bytes, length);
         free(filename);
@@ -465,11 +468,24 @@ list_files(int fd) {
     return 0;
 }
 
+// handler function for children
+// shoutout beej
+void sigchld_handler(int s) {
+    (void)s;
+    
+    int saved_errno = errno;
+
+    while(waitpid(-1, NULL, WNOHANG) > 0);
+
+    errno = saved_errno;
+}
+
 // function to create the poll server
 void
 create_pserv() {
     char path[35] = "/opt/fileserver/"; // GRAB FROM CONFIG - initialize globaly?
     struct stat fsdir;
+    struct sigaction sa;
     uint32_t choice, tmp_choice, able;
 
     struct pollfd pfds[MAX_CONN];
@@ -512,10 +528,21 @@ create_pserv() {
            exit(EXIT_FAILURE);
         }
     }
+    
+    // reap all dead processes
+    sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    
+    // need to do more research into sigaction
+    if (sigaction(SIGCHLD, &sa, NULL) == -1) {
+        perror("sigaction error");
+        exit(1);
+    }
 
     // can be sent to log file
     printf("File server has started, listening on port %s\n", PORT);
-    
+
     while(1) {
         int poll_count = poll(pfds, clients, -1);
 
@@ -564,65 +591,84 @@ create_pserv() {
                 }
                 choice = ntohl(tmp_choice);
 
-                if (choice == 1) {
-                    printf("Client (%s) wants to upload...\n", s);
-                    read(pfds[i].fd, &able, sizeof(able));
+                // child process
+                if (!fork()) {
+                    // child doesn't need listener
+                    close(fd);
 
-                    if (able != 0) {
-                        fprintf(stderr, "Error on client-side.\n");
-                        continue;
+                    // close out all the other client sockets b/c child only needs itself
+                    for (int j = 1; j < clients; j++) {
+                        if (j != i) {
+                            close(pfds[j].fd);
+                        }
                     }
 
-                    if ((error = recv_file(pfds[i].fd, 0)) != 0) {
-                        fprintf(stderr, "recv_file: return value of %d\n", error);
-                        //able = htonl(error);
-                        //send(pfds[i].fd, &able, sizeof(able), 0); // let client know upload failed
+                    if (choice == 1) {
+                        printf("Client (%s) wants to upload...\n", s);
+                        read(pfds[i].fd, &able, sizeof(able));
+
+                        if (able != 0) {
+                            fprintf(stderr, "Error on client-side.\n");
+                            close(pfds[i].fd);
+                            exit(0);
+                        }
+
+                        if ((error = recv_file(pfds[i].fd, 0)) != 0) {
+                            fprintf(stderr, "recv_file: return value of %d\n", error);
+                            //able = htonl(error);
+                            //send(pfds[i].fd, &able, sizeof(able), 0); // let client know upload failed
+                        }
+
+                        //continue;
+                    }
+                    else if (choice == 2) {
+                        printf("Client (%s) wants to download...\n", s);
+                        read(pfds[i].fd, &able, sizeof(able));
+
+                        if (able != 0) {
+                            fprintf(stderr, "Error on client-side.\n");
+                            close(pfds[i].fd);
+                            exit(0);
+                        }
+                        
+                        if ((error = send_file(pfds[i].fd, 0)) != 0) {
+                            fprintf(stderr, "send_file: return value of %d\n", error);
+                            able = htonl(error);
+                            send(pfds[i].fd, &able, sizeof(able), 0); // let client know download failed
+                        }
+
+                        //continue;
+                    }
+                    else if (choice == 3) {
+                        printf("Client (%s) wants to see files...\n", s);
+                        if ((error = list_files(pfds[i].fd)) != 0)
+                            fprintf(stderr, "list_files: return value of %d\n", error);
+                        //continue;
+                    }
+                    else if (choice == 4) {
+                        printf("Client (%s) wants to remove a file...\n", s);
+                        if ((error = remove_file(pfds[i].fd)) != 0) {
+                            fprintf(stderr, "remove_file: return value of %d\n", error);
+                            able = htonl(error);
+                            send(pfds[i].fd, &able, sizeof(able), 0); // let client know removal failed
+                        }
+                        //continue;
                     }
 
-                    continue;
-                }
-                else if (choice == 2) {
-                    printf("Client (%s) wants to download...\n", s);
-                    read(pfds[i].fd, &able, sizeof(able));
-
-                    if (able != 0) {
-                        fprintf(stderr, "Error on client-side.\n");
-                        continue;
-                    }
-                    
-                    if ((error = send_file(pfds[i].fd, 0)) != 0) {
-                        fprintf(stderr, "send_file: return value of %d\n", error);
-                        able = htonl(error);
-                        send(pfds[i].fd, &able, sizeof(able), 0); // let client know download failed
-                    }
-
-                    continue;
-                }
-                else if (choice == 3) {
-                    printf("Client (%s) wants to see files...\n", s);
-                    if ((error = list_files(pfds[i].fd)) != 0)
-                        fprintf(stderr, "list_files: return value of %d\n", error);
-                    continue;
-                }
-                else if (choice == 4) {
-                    printf("Client (%s) wants to remove a file...\n", s);
-                    if ((error = remove_file(pfds[i].fd)) != 0) {
-                        fprintf(stderr, "remove_file: return value of %d\n", error);
-                        able = htonl(error);
-                        send(pfds[i].fd, &able, sizeof(able), 0); // let client know removal failed
-                    }
-                    continue;
+                    close(pfds[i].fd);
+                    exit(0);
                 }
             }
-// Errors with connection handled here
+            // Errors with connection handled here
             if (pfds[i].revents & (POLLERR | POLLHUP)){
-                printf("The client has closed the connection -2.\n\n");
+                printf("The client encountered a POLLERR or POLLHUP.\n\n");
                 pfds[i] = pfds[clients-1];
                 clients--;
             }
 
+            // This should never be hit - ideally
             if (pfds[i].revents & POLLNVAL){
-                printf("The client has closed the connection -3.\n\n");
+                printf("The client encountered a POLLNVAL.\n\n");
                 pfds[i] = pfds[clients-1];
                 clients--;
             }

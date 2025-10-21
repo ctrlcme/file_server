@@ -1,6 +1,8 @@
 #include "build.h"
 
-//char *path;
+/* GENERAL CLEANUP STILL NEEDS TO OCCUR 
+ * WITH VARS, MEM, RETURNS, ETC.
+ * BUT PERSISTENT MENU WORKS AS WELL AS ALL OPTIONS */
 
 // check if desired file for copying to fileserver exists
 int
