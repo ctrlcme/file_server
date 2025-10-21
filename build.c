@@ -537,7 +537,7 @@ create_pserv() {
     // need to do more research into sigaction
     if (sigaction(SIGCHLD, &sa, NULL) == -1) {
         perror("sigaction error");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     // can be sent to log file
@@ -610,7 +610,7 @@ create_pserv() {
                         if (able != 0) {
                             fprintf(stderr, "Error on client-side.\n");
                             close(pfds[i].fd);
-                            exit(0);
+                            exit(EXIT_SUCCESS);
                         }
 
                         if ((error = recv_file(pfds[i].fd, 0)) != 0) {
@@ -628,7 +628,7 @@ create_pserv() {
                         if (able != 0) {
                             fprintf(stderr, "Error on client-side.\n");
                             close(pfds[i].fd);
-                            exit(0);
+                            exit(EXIT_SUCCESS);
                         }
                         
                         if ((error = send_file(pfds[i].fd, 0)) != 0) {
@@ -656,7 +656,7 @@ create_pserv() {
                     }
 
                     close(pfds[i].fd);
-                    exit(0);
+                    exit(EXIT_SUCCESS);
                 }
             }
             // Errors with connection handled here
